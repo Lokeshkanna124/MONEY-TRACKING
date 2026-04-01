@@ -1,1 +1,295 @@
 
+import { useState, useRef, useEffect } from "react";
+
+const CATEGORIES = {
+  food: { label: "Food & Drink", icon: "🍜", color: "#FF6B6B" },
+  transport: { label: "Transport", icon: "🚌", color: "#4ECDC4" },
+  shopping: { label: "Shopping", icon: "🛍️", color: "#FFE66D" },
+  health: { label: "Health", icon: "💊", color: "#A8E6CF" },
+  entertainment: { label: "Entertainment", icon: "🎬", color: "#C779D0" },
+  bills: { label: "Bills", icon: "📄", color: "#F7B731" },
+  income: { label: "Income", icon: "💰", color: "#26de81" },
+  other: { label: "Other", icon: "📦", color: "#778CA3" },
+};
+
+const SYSTEM_PROMPT = `You are a financial tracking assistant. The user will describe transactions or ask for financial insights.
+
+When they describe a transaction, respond with ONLY valid JSON (no markdown, no extra text):
+{
+  "action": "add_transaction",
+  "amount": <number, negative for expenses, positive for income>,
+  "description": "<short description>",
+  "category": "<one of: food, transport, shopping, health, entertainment, bills, income, other>",
+  "message": "<friendly confirmation message, 1 sentence>"
+}
+
+When they ask a question about their finances, respond with ONLY valid JSON:
+{
+  "action": "insight",
+  "message": "<your detailed answer or insight>"
+}
+
+Examples:
+- "spent $12 on coffee" → add_transaction, amount: -12, category: food
+- "got paid $500" → add_transaction, amount: 500, category: income
+- "where am I spending most?" → insight with analysis
+- "netflix 15 dollars" → add_transaction, amount: -15, category: entertainment
+
+Always respond ONLY with JSON. Never add explanations outside the JSON.`;
+
+export default function MoneyTracker() {
+  const [transactions, setTransactions] = useState([
+    { id: 1, amount: 2400, description: "Monthly salary", category: "income", date: new Date(Date.now() - 86400000 * 5) },
+    { id: 2, amount: -45, description: "Grocery run", category: "food", date: new Date(Date.now() - 86400000 * 3) },
+    { id: 3, amount: -12.5, description: "Uber ride", category: "transport", date: new Date(Date.now() - 86400000 * 2) },
+    { id: 4, amount: -89, description: "Gym membership", category: "health", date: new Date(Date.now() - 86400000) },
+  ]);
+  const [input, setInput] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [aiMessage, setAiMessage] = useState("Hi! Tell me about a transaction or ask about your spending. Try: \"spent $24 on lunch\" or \"how am I doing this month?\"");
+  const [activeTab, setActiveTab] = useState("chat");
+  const inputRef = useRef(null);
+
+  const balance = transactions.reduce((sum, t) => sum + t.amount, 0);
+  const income = transactions.filter(t => t.amount > 0).reduce((sum, t) => sum + t.amount, 0);
+  const expenses = transactions.filter(t => t.amount < 0).reduce((sum, t) => sum + t.amount, 0);
+
+  const categoryTotals = transactions
+    .filter(t => t.amount < 0)
+    .reduce((acc, t) => {
+      acc[t.category] = (acc[t.category] || 0) + Math.abs(t.amount);
+      return acc;
+    }, {});
+
+  const topCategory = Object.entries(categoryTotals).sort((a, b) => b[1] - a[1])[0];
+
+  async function handleSubmit() {
+    if (!input.trim() || loading) return;
+    const userText = input.trim();
+    setInput("");
+    setLoading(true);
+    setAiMessage("...");
+
+    const context = transactions.slice(-10).map(t =>
+      `${t.amount > 0 ? "+" : ""}$${t.amount} - ${t.description} (${t.category})`
+    ).join("\n");
+
+    try {
+      const response = await fetch("https://api.anthropic.com/v1/messages", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model: "claude-sonnet-4-20250514",
+          max_tokens: 1000,
+          system: SYSTEM_PROMPT + `\n\nCurrent transactions:\n${context}\n\nBalance: $${balance.toFixed(2)}`,
+          messages: [{ role: "user", content: userText }],
+        }),
+      });
+
+      const data = await response.json();
+      const raw = data.content.map(b => b.text || "").join("");
+      const clean = raw.replace(/```json|```/g, "").trim();
+      const parsed = JSON.parse(clean);
+
+      if (parsed.action === "add_transaction") {
+        setTransactions(prev => [{
+          id: Date.now(),
+          amount: parsed.amount,
+          description: parsed.description,
+          category: parsed.category,
+          date: new Date(),
+        }, ...prev]);
+        setAiMessage(parsed.message);
+        setActiveTab("chat");
+      } else {
+        setAiMessage(parsed.message);
+      }
+    } catch (err) {
+      setAiMessage("Hmm, I couldn't parse that. Try saying something like \"spent $20 on dinner\".");
+    }
+    setLoading(false);
+  }
+
+  function deleteTransaction(id) {
+    setTransactions(prev => prev.filter(t => t.id !== id));
+  }
+
+  const fmt = (n) => new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(n);
+  const fmtDate = (d) => new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric" }).format(d);
+
+  return (
+    <div style={{
+      minHeight: "100vh",
+      background: "#0A0A0F",
+      color: "#E8E4DC",
+      fontFamily: "'Georgia', 'Times New Roman', serif",
+      display: "flex",
+      flexDirection: "column",
+      alignItems: "center",
+      padding: "0",
+    }}>
+      <style>{`
+        @import url('https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,400;0,700;1,400&family=DM+Mono:wght@300;400&display=swap');
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        .app { font-family: 'Playfair Display', Georgia, serif; }
+        .mono { font-family: 'DM Mono', monospace; }
+        .card { background: #13131A; border: 1px solid #1E1E2E; border-radius: 2px; }
+        .glow { box-shadow: 0 0 40px rgba(38, 222, 129, 0.08); }
+        input:focus { outline: none; }
+        button { cursor: pointer; border: none; }
+        .tab-btn { transition: all 0.2s; }
+        .tab-btn:hover { opacity: 0.8; }
+        .tx-row:hover .delete-btn { opacity: 1 !important; }
+        .delete-btn { transition: opacity 0.2s; }
+        .send-btn:hover { background: #1fba6f !important; }
+        .send-btn:disabled { opacity: 0.5; }
+        ::-webkit-scrollbar { width: 4px; }
+        ::-webkit-scrollbar-track { background: #0A0A0F; }
+        ::-webkit-scrollbar-thumb { background: #2A2A3A; border-radius: 2px; }
+      `}</style>
+
+      <div className="app" style={{ width: "100%", maxWidth: "480px", minHeight: "100vh", display: "flex", flexDirection: "column" }}>
+
+        {/* Header */}
+        <div style={{ padding: "32px 24px 16px", borderBottom: "1px solid #1E1E2E" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+            <div>
+              <div style={{ fontSize: "11px", letterSpacing: "4px", color: "#4A4A6A", textTransform: "uppercase", marginBottom: "4px" }} className="mono">Portfolio</div>
+              <div style={{ fontSize: "38px", fontWeight: "700", lineHeight: 1, color: balance >= 0 ? "#26de81" : "#FF6B6B", fontStyle: "italic" }}>
+                {fmt(balance)}
+              </div>
+            </div>
+            <div style={{ textAlign: "right" }}>
+              <div style={{ fontSize: "10px", color: "#4A4A6A", letterSpacing: "2px", marginBottom: "8px" }} className="mono">THIS PERIOD</div>
+              <div style={{ fontSize: "13px", color: "#26de81" }} className="mono">+{fmt(income)}</div>
+              <div style={{ fontSize: "13px", color: "#FF6B6B" }} className="mono">{fmt(expenses)}</div>
+            </div>
+          </div>
+
+          {/* Mini stats */}
+          <div style={{ display: "flex", gap: "8px", marginTop: "20px" }}>
+            {topCategory && (
+              <div style={{ flex: 1, background: "#0F0F18", border: "1px solid #1E1E2E", borderRadius: "2px", padding: "10px 12px" }}>
+                <div style={{ fontSize: "10px", color: "#4A4A6A", letterSpacing: "2px", marginBottom: "4px" }} className="mono">TOP SPEND</div>
+                <div style={{ fontSize: "13px" }}>{CATEGORIES[topCategory[0]]?.icon} {CATEGORIES[topCategory[0]]?.label}</div>
+                <div style={{ fontSize: "12px", color: "#FF6B6B" }} className="mono">{fmt(topCategory[1])}</div>
+              </div>
+            )}
+            <div style={{ flex: 1, background: "#0F0F18", border: "1px solid #1E1E2E", borderRadius: "2px", padding: "10px 12px" }}>
+              <div style={{ fontSize: "10px", color: "#4A4A6A", letterSpacing: "2px", marginBottom: "4px" }} className="mono">TRANSACTIONS</div>
+              <div style={{ fontSize: "22px", fontWeight: "700" }}>{transactions.length}</div>
+              <div style={{ fontSize: "11px", color: "#4A4A6A" }} className="mono">entries logged</div>
+            </div>
+          </div>
+        </div>
+
+        {/* Tabs */}
+        <div style={{ display: "flex", borderBottom: "1px solid #1E1E2E" }}>
+          {["chat", "history"].map(tab => (
+            <button key={tab} className="tab-btn mono" onClick={() => setActiveTab(tab)} style={{
+              flex: 1, padding: "12px", background: "none", color: activeTab === tab ? "#26de81" : "#4A4A6A",
+              fontSize: "10px", letterSpacing: "3px", textTransform: "uppercase",
+              borderBottom: activeTab === tab ? "2px solid #26de81" : "2px solid transparent",
+            }}>
+              {tab}
+            </button>
+          ))}
+        </div>
+
+        {/* Content */}
+        <div style={{ flex: 1, overflow: "auto", padding: "20px 24px" }}>
+          {activeTab === "chat" && (
+            <div>
+              {/* AI bubble */}
+              <div style={{ background: "#0F0F18", border: "1px solid #1E1E2E", borderRadius: "2px 16px 16px 16px", padding: "16px", marginBottom: "20px", position: "relative" }}>
+                <div style={{ fontSize: "10px", color: "#26de81", letterSpacing: "3px", marginBottom: "8px" }} className="mono">AI ASSISTANT</div>
+                <div style={{ fontSize: "15px", lineHeight: "1.6", color: loading ? "#4A4A6A" : "#E8E4DC" }}>
+                  {loading ? (
+                    <span className="mono" style={{ fontSize: "20px", letterSpacing: "4px", animation: "pulse 1s infinite" }}>···</span>
+                  ) : aiMessage}
+                </div>
+              </div>
+
+              {/* Recent (last 3) */}
+              {transactions.slice(0, 3).map(t => {
+                const cat = CATEGORIES[t.category] || CATEGORIES.other;
+                return (
+                  <div key={t.id} className="tx-row" style={{ display: "flex", alignItems: "center", padding: "12px 0", borderBottom: "1px solid #0F0F18", position: "relative" }}>
+                    <div style={{ width: "36px", height: "36px", borderRadius: "50%", background: cat.color + "22", display: "flex", alignItems: "center", justifyContent: "center", fontSize: "16px", marginRight: "12px", flexShrink: 0, border: `1px solid ${cat.color}44` }}>
+                      {cat.icon}
+                    </div>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontSize: "14px", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{t.description}</div>
+                      <div style={{ fontSize: "11px", color: "#4A4A6A" }} className="mono">{cat.label} · {fmtDate(t.date)}</div>
+                    </div>
+                    <div style={{ fontSize: "15px", fontWeight: "700", color: t.amount >= 0 ? "#26de81" : "#FF6B6B", flexShrink: 0, marginLeft: "8px" }} className="mono">
+                      {t.amount >= 0 ? "+" : ""}{fmt(t.amount)}
+                    </div>
+                  </div>
+                );
+              })}
+              {transactions.length > 3 && (
+                <button onClick={() => setActiveTab("history")} style={{ background: "none", color: "#4A4A6A", fontSize: "12px", padding: "12px 0", width: "100%", textAlign: "center" }} className="mono">
+                  View all {transactions.length} transactions →
+                </button>
+              )}
+            </div>
+          )}
+
+          {activeTab === "history" && (
+            <div>
+              {transactions.length === 0 && (
+                <div style={{ textAlign: "center", color: "#4A4A6A", padding: "40px 0", fontSize: "14px" }}>No transactions yet. Start by telling the AI about a purchase.</div>
+              )}
+              {transactions.map(t => {
+                const cat = CATEGORIES[t.category] || CATEGORIES.other;
+                return (
+                  <div key={t.id} className="tx-row" style={{ display: "flex", alignItems: "center", padding: "13px 0", borderBottom: "1px solid #0F0F18", position: "relative" }}>
+                    <div style={{ width: "36px", height: "36px", borderRadius: "50%", background: cat.color + "22", display: "flex", alignItems: "center", justifyContent: "center", fontSize: "16px", marginRight: "12px", flexShrink: 0, border: `1px solid ${cat.color}44` }}>
+                      {cat.icon}
+                    </div>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontSize: "14px", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{t.description}</div>
+                      <div style={{ fontSize: "11px", color: "#4A4A6A" }} className="mono">{cat.label} · {fmtDate(t.date)}</div>
+                    </div>
+                    <div style={{ display: "flex", alignItems: "center", gap: "10px", flexShrink: 0, marginLeft: "8px" }}>
+                      <div style={{ fontSize: "15px", fontWeight: "700", color: t.amount >= 0 ? "#26de81" : "#FF6B6B" }} className="mono">
+                        {t.amount >= 0 ? "+" : ""}{fmt(t.amount)}
+                      </div>
+                      <button className="delete-btn" onClick={() => deleteTransaction(t.id)} style={{ background: "none", color: "#FF6B6B", fontSize: "16px", opacity: 0, padding: "2px" }}>×</button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+
+        {/* Input */}
+        <div style={{ padding: "16px 24px 24px", borderTop: "1px solid #1E1E2E", background: "#0A0A0F" }}>
+          <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
+            <input
+              ref={inputRef}
+              value={input}
+              onChange={e => setInput(e.target.value)}
+              onKeyDown={e => e.key === "Enter" && handleSubmit()}
+              placeholder="e.g. spent $18 on coffee and pastry…"
+              disabled={loading}
+              style={{
+                flex: 1, background: "#0F0F18", border: "1px solid #1E1E2E", borderRadius: "2px",
+                color: "#E8E4DC", padding: "12px 14px", fontSize: "14px", fontFamily: "inherit",
+              }}
+            />
+            <button className="send-btn" onClick={handleSubmit} disabled={loading || !input.trim()} style={{
+              background: "#26de81", color: "#0A0A0F", padding: "12px 18px", borderRadius: "2px",
+              fontSize: "18px", fontWeight: "700", flexShrink: 0,
+            }}>→</button>
+          </div>
+          <div style={{ fontSize: "10px", color: "#2A2A3A", marginTop: "8px", letterSpacing: "1px" }} className="mono">
+            Try: "received $500 freelance" · "groceries $67" · "how's my spending?"
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
